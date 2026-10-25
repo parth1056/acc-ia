@@ -1,4 +1,10 @@
-# Three-presenter recording runbook
+# Optional live demonstration and evidence-capture runbook
+
+The submission recording now uses a screenshot-based presentation narrated by three presenters.
+Live AWS interaction is not required while recording it. This guide preserves the alternative
+live demonstration workflow for reproducing tests and collecting fresh evidence.
+Start with the repository README for deployment, local stack configuration, and current guidance.
+Private console links and local presentation files mentioned below are not distributed in this repository.
 
 **Target: 7:30. Maximum: 8:00.** Use three real voices. One operator can share the AWS screen
 throughout. No student names, roll numbers, division or group identifiers are needed on screen.

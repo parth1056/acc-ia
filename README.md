@@ -1,143 +1,228 @@
 # Policy-Driven Cloud Security Monitoring and Automated Remediation Using AWS
 
-Advanced Cloud Computing IA-2, July-November 2026.
+A serverless prototype that checks AWS security group inbound rules against external JSON policies, alerts on violations, and automatically removes selected unsafe rules.
 
+For example, public SSH access triggers automatic removal, while a public database port produces an administrator alert. Changing the policy in S3 changes the response without redeploying Lambda code.
 
+## How it works
 
-## What it does
+```text
+Security group rule added or modified
+                 |
+       CloudTrail -> EventBridge
+                           |
+Hourly Scheduler --------> Lambda <-------- Manual invocation
+                           |
+                 Read JSON policy from S3
+                           |
+                 Inspect current EC2 rules
+                           |
+                 Match ports / protocol / source
+                           |
+            +--------------+--------------+
+            |                             |
+         Alert only                 Remediate
+      Keep the rule          Recheck scope and current rule
+            |                Revoke the exact rule ID
+            |                Verify the rule is absent
+            +--------------+--------------+
+                           |
+               CloudWatch logs + SNS notification
+```
 
-The Python Lambda function reads a validated JSON policy from S3 and evaluates inbound rules on
-two explicitly allowed, tagged security groups. Violations either generate an alert or cause
-the specific rule to be revoked and its removal verified. CloudTrail and an EventBridge rule
-provide configuration-change evaluation. EventBridge Scheduler independently invokes periodic scans.
-CloudWatch records structured results; SNS publishes incident notifications.
+CloudTrail records configuration changes. EventBridge invokes the evaluator after supported ingress additions or modifications. Scheduler independently checks both monitored groups. Every evaluation loads the current policy from S3.
 
-Policies define protected ports/ranges, TCP/UDP/all protocols, unrestricted IPv4/IPv6 matching and
-alert/remediate actions. Ports and actions are not embedded as separate SSH/database check functions.
+This is configuration monitoring: it does not inspect network traffic or detect an actual intrusion. The demonstration uses **unattached test security groups**, with no running EC2 instances or database servers.
 
-## Start here
+## Policy behavior and demonstrated results
 
-Read `docs/START-HERE.md`, then use `docs/DEMO-SCRIPT.md` for rehearsal and `docs/SUBMISSION.md`
-for the submission fields. Raw, timestamped execution evidence is in the local `evidence/` directory (excluded from the public repository).
+The checked-in [policy](config/policies.json) is `demo-v1`:
 
-For the complete three-presenter recording, use `docs/RECORDING-RUNBOOK.md`.
-Run `./demo.ps1 prepare` before recording, then `ssh`, `alert`, `policy` and `scheduled`
-in that order. Run `./demo.ps1 finish` afterward. The helper verifies real trigger results
-and restores the recording baseline after a full `./demo.ps1 rehearse`.
+| Policy | TCP ports | Public source | Response |
+|---|---|---|---|
+| ADMIN-ACCESS | 22, 3389 | `0.0.0.0/0` or `::/0` | Remove and verify |
+| DATABASE-ACCESS | 3306, 5432 | `0.0.0.0/0` or `::/0` | Alert; retain rule |
 
-## Environment
+For the policy-change experiment, `demo-v2` changes DATABASE-ACCESS to `remediate`. A subsequent manual scan removes the same database rule previously retained under v1. Uploading a policy alone does **not** trigger a scan. The Lambda code hash stays unchanged.
 
-- Windows PowerShell, Python 3.13, AWS CLI v2 and an authenticated owner profile.
-- Profile: `acc-ia`; selected Region: `ap-southeast-2` (Sydney).
-- CloudFormation stack: the stack configured in `deployment/private-runtime.json`.
-- The notification email is configured privately at deployment and is independent of AWS sign-in/billing.
-- No running EC2 instances, NAT gateways, databases or public application endpoints are required.
+Live AWS tests recorded on 20 and 24 October 2026 demonstrated:
+
+- Event-triggered SSH removal, with post-removal verification.
+- Database alert-only handling, followed by remediation after the S3 policy change.
+- Actual scheduled evaluation, public IPv6 handling, and overlapping port-range detection.
+- Preservation of restricted SSH, unmatched HTTPS, and an unmonitored control group.
+- Dry-run behavior and rejection of invalid policy configuration.
+- Received SNS incident emails for the database alert and subsequent remediation.
+
+The [sanitized rehearsal summary](docs/demo-verification.json) records the main live scenarios. **All 27 local unit tests passed again on 25 October 2026**: 17 evaluator tests and 10 workflow tests. These tests use mocks; they do not deploy resources or contact AWS. Historical verification is not a claim about the current health of a deployment.
+
+## Repository map
+
+| Path | Purpose |
+|---|---|
+| [src/policy_engine.py](src/policy_engine.py) | Policy validation, protocol/source/range matching and response conflicts |
+| [src/handler.py](src/handler.py) | AWS reads, scope checks, evaluation, remediation, verification, logging and notifications |
+| [config/policies.json](config/policies.json) | Baseline external policy |
+| [scripts/build.py](scripts/build.py) | Lambda packaging and CloudFormation generation |
+| [infra/template.json](infra/template.json) | Infrastructure, initially dry-run with automatic evaluation disabled |
+| [infra/security.guard](infra/security.guard) | Project-specific infrastructure checks |
+| [tests/](tests/) | Evaluator and workflow tests |
+| [scripts/demo.py](scripts/demo.py), [demo.ps1](demo.ps1) | Ordered live rehearsal, verification and restoration |
+| [scripts/lab.py](scripts/lab.py) | Individual live status, policy, rule, scan and trigger controls |
+| [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md) | Short implementation overview |
+| [docs/RECORDING-RUNBOOK.md](docs/RECORDING-RUNBOOK.md) | Optional live evidence-capture and rehearsal instructions |
 
 ## Run locally
 
+Prerequisites: Git and Python 3.13. These examples use Windows PowerShell, matching the development environment. AWS credentials are unnecessary for the unit tests and build.
+
 ```powershell
-uv venv .venv
-uv pip install --python .venv\Scripts\python.exe -r requirements.txt
-.venv\Scripts\python.exe -m unittest discover -s tests -v
-.venv\Scripts\python.exe scripts\build.py
+git clone https://github.com/parth1056/acc-ia.git
+Set-Location acc-ia
+py -3.13 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+.\.venv\Scripts\python.exe scripts\build.py
 ```
 
-Infrastructure validation used cfn-lint 1.57.2 and official cfn-guard 3.2.1 with
-`infra/security.guard`. The Guard checks are project-specific checks, not a full security audit.
+The build produces `output/lambda.zip`, `output/build-manifest.json`, and regenerates `infra/template.json`. The archive contains the application modules; Lambda supplies Boto3 in its managed Python runtime. Local pinned dependencies support tests and operator helpers. The build derives the S3 code key from the archive hash, so rebuilding can change the template's default CodeKey.
+
+Optional infrastructure checks (install cfn-guard separately):
 
 ```powershell
-cfn-lint -t infra\template.json -r ap-southeast-2
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.\.venv\Scripts\cfn-lint.exe -t infra\template.json -r ap-southeast-2
 cfn-guard validate --rules infra\security.guard --data infra\template.json --output-format json
 ```
 
-## Rehearse against the existing deployment
+The Guard rules check this project's requirements; they are not a complete security audit.
 
-Authenticate with `aws login --profile acc-ia --region ap-southeast-2` when needed.
-The script uses short-lived login credentials through Boto3; no keys belong in this repository.
+## Deploy your own copy
 
-```powershell
-.venv\Scripts\python.exe scripts\lab.py status
-.venv\Scripts\python.exe scripts\lab.py policy v1
-.venv\Scripts\python.exe scripts\lab.py events enable
-.venv\Scripts\python.exe scripts\lab.py add ssh --group a
-# Refresh the console and inspect the event-triggered CloudWatch summary.
-.venv\Scripts\python.exe scripts\lab.py add database --group a
-# The database rule remains and a notification is published.
-.venv\Scripts\python.exe scripts\lab.py policy v2
-.venv\Scripts\python.exe scripts\lab.py scan
-# The same engine now removes the database rule without code redeployment.
+The supplied helpers use **ap-southeast-2 (Sydney)**. For the new AWS experience, confirm Sydney is your project's selected Region in AWS Settings > View all projects > Overview > Additional Info > Region before following these steps.
+
+You need an authorized AWS project, current AWS CLI v2 credentials, an existing VPC in Sydney, and permission to create the resources described below. This repository does not provide access to the original deployment. Never put credentials or signed URLs in source files.
+
+1. Authenticate your local profile. For the browser-login setup used here:
+
+   ```powershell
+   aws login --profile acc-ia --region ap-southeast-2
+   aws sts get-caller-identity --profile acc-ia --region ap-southeast-2
+   ```
+
+   An already authenticated CLI profile is also usable. `acc-ia` is a local profile label.
+
+2. Create an artifact bucket in Sydney with a globally unique name. Enable all four S3 Block Public Access settings, default encryption and versioning. Add a bucket policy denying non-HTTPS access. Its policies must allow your deployment identity to upload objects and the Lambda execution role to read the policy. This prerequisite bucket is separate from the CloudTrail log bucket created by the stack.
+
+3. Build and upload code and policy. Replace every placeholder with your own values:
+
+   ```powershell
+   $artifactBucket = 'REPLACE-WITH-YOUR-ARTIFACT-BUCKET'
+   $demoVpc = 'vpc-REPLACE'
+   $notificationEmail = 'REPLACE-WITH-YOUR-EMAIL'
+   $stackName = 'acc-security'
+
+   .\.venv\Scripts\python.exe scripts\build.py
+   $codeKey = (Get-Content output\build-manifest.json -Raw | ConvertFrom-Json).code_key
+   aws s3 cp output\lambda.zip "s3://$artifactBucket/$codeKey" --profile acc-ia --region ap-southeast-2
+   aws s3 cp config\policies.json "s3://$artifactBucket/policies/current.json" --content-type application/json --profile acc-ia --region ap-southeast-2
+   ```
+
+4. Create the stack in its initial safe state:
+
+   ```powershell
+   aws cloudformation deploy --template-file infra\template.json --stack-name $stackName --capabilities CAPABILITY_NAMED_IAM --parameter-overrides "VpcId=$demoVpc" "ArtifactBucket=$artifactBucket" "CodeKey=$codeKey" "NotificationEmail=$notificationEmail" DryRun=true ChangeMonitoringState=DISABLED ScheduleState=DISABLED --profile acc-ia --region ap-southeast-2
+   ```
+
+   The stack creates two monitored groups and one unmonitored control group, Lambda and its scoped role, CloudWatch logs, an encrypted SNS topic and email subscription, a single-Region CloudTrail trail with private storage, EventBridge wiring, and Scheduler with its invocation role. The groups are initially unattached with no demo ingress.
+
+5. Confirm the SNS subscription from your inbox. In the stack's Outputs, open MonitorFunction in Lambda and invoke it with `{"trigger":"manual"}`. Inspect the response and CloudWatch logs. With no violating ingress, zero findings is expected. Add a deliberate test violation and verify dry-run behavior before enabling removal.
+
+6. Update the same stack with the same parameters, changing `DryRun=false` and `ChangeMonitoringState=ENABLED` after scope and dry-run verification. Set `ScheduleState=ENABLED` for hourly checks, or leave it disabled until the scheduled rehearsal segment. ScanRate defaults to `rate(1 hour)`. Use the unattached demonstration groups.
+
+## Configure and run the optional live rehearsal
+
+For the submission recording, the prepared presentation contains the demonstration screenshots and is narrated by three presenters. **Live AWS interaction is not required while presenting it.** The report, slide deck and recording are delivered separately from this source repository. The helpers below reproduce tests or collect new evidence.
+
+Helpers discover resource IDs from CloudFormation Outputs. Defaults are stack `acc-security`, Region Sydney and profile `acc-ia`. For another stack name, create the `deployment` directory and a local file `deployment/private-runtime.json`:
+
+```json
+{"stack": "YOUR-STACK-NAME"}
 ```
 
-For a genuine scheduled-path demonstration, disable event monitoring, add SSH to group B,
-temporarily enable a one-minute scan, and wait for an actual `trigger=scheduled` log.
-Then restore hourly scanning and the event rule. These demo controls change live settings;
-restore the normal state after rehearsal.
+This file is gitignored and contains no credentials. `scripts/demo.py` also accepts `--stack` and `--profile`. `scripts/lab.py` accepts `--profile` before its subcommand and reads its stack name from this file. Private configuration from the original deployment is not required.
+
+Once remediation is enabled and the email subscription is confirmed:
 
 ```powershell
-.venv\Scripts\python.exe scripts\lab.py events disable
-.venv\Scripts\python.exe scripts\lab.py add ssh --group b
-.venv\Scripts\python.exe scripts\lab.py schedule enable --rate 'rate(1 minute)'
-# Wait for and verify the scheduled invocation before continuing.
-.venv\Scripts\python.exe scripts\lab.py schedule enable --rate 'rate(1 hour)'
-.venv\Scripts\python.exe scripts\lab.py events enable
-.venv\Scripts\python.exe scripts\lab.py clear-demo
-.venv\Scripts\python.exe scripts\lab.py policy v1
+.\demo.ps1 check
+.\demo.ps1 prepare
+.\demo.ps1 ssh
+.\demo.ps1 alert
+.\demo.ps1 policy
+.\demo.ps1 scheduled
 ```
 
-## Reproduce a deployment
+| Step | Expected behavior |
+|---|---|
+| `check` | Read-only health checks; requires active Lambda, remediation enabled, logging trail, confirmed email and unattached groups |
+| `prepare` | Restore v1, clear test ingress, add restricted SSH and HTTPS references, enable events and pause Scheduler |
+| `ssh` | Create public SSH; verify actual event-triggered removal |
+| `alert` | Create public MySQL; verify alert-only and rule retention |
+| `policy` | Upload v2; manually evaluate; verify MySQL removal and unchanged code hash |
+| `scheduled` | Isolate and verify an actual scheduled correction |
+| `scope`, `extended` | Optional control-scope, IPv6 and range checks |
+| `rehearse` | Full sequence, then restore prepared baseline with Scheduler paused |
+| `finish` | Clear test ingress, restore v1, enable event monitoring and hourly scans |
 
-1. Choose an accessible VPC in Sydney. Create a private, encrypted, versioned artifact bucket
-   in the same Region and deny non-HTTPS access. The deployed bucket's name is in `deployment/private-runtime.json`.
-2. Build with `scripts/build.py`. Upload `output/lambda.zip` under the code key in
-   `output/build-manifest.json`; upload `config/policies.json` as `policies/current.json`.
-3. Create a CloudFormation stack from `infra/template.json`, supplying VpcId, ArtifactBucket,
-   CodeKey and NotificationEmail with `CAPABILITY_NAMED_IAM`. Review any validation failures.
-4. Confirm the SNS email subscription. Initial parameters default to dry-run and disabled triggers.
-5. Invoke the function manually, inspect logs, and verify scope. Update DryRun to false,
-   ChangeMonitoringState to ENABLED, ScheduleState to ENABLED, ScanRate to rate(1 hour).
+Run `ssh`, `alert`, `policy` and `scheduled` in order. The policy step needs the rule retained by the alert step. These commands change real AWS configuration and may send incident emails. Rehearsal records are saved under ignored `evidence/`.
 
-The template creates three unattached groups, the Lambda function and scoped execution role,
-CloudWatch logs, an encrypted SNS topic/subscription, an active single-Region CloudTrail trail and
-private log bucket, the event rule and invocation permission, and Scheduler with its invocation role.
+Individual controls:
 
-## Boundaries and response semantics
+```powershell
+.\.venv\Scripts\python.exe scripts\lab.py --help
+.\.venv\Scripts\python.exe scripts\lab.py status
+.\.venv\Scripts\python.exe scripts\lab.py scan
+```
 
-- Inbound configuration only. A violation is not proof of an actual intrusion or network reachability.
-- Public-anywhere means a single normalized `0.0.0.0/0` or `::/0` rule. Combined CIDR coverage,
-  prefix lists, referenced groups, routing and NACL analysis are outside this prototype.
-- A broad violating rule is removed in full, not rewritten into permitted fragments.
-- A physical rule matching both alert and remediate policies remains alert-only, with a conflict flag.
-- Changes require a configured group ID, monitoring tag and no attached network interfaces.
-- Repeated events/scans can repeat alerts. No durable incident database or exactly-once guarantee.
-- Current AWS state is re-read before removal, but concurrent changes remain possible between API calls.
-- Invalid policy configuration stops evaluation, logs an error and makes the invocation fail.
-- SNS acceptance proves publication. Email receipt requires a confirmed subscription and actual inbox evidence.
-- Event delivery can be delayed or missed. Scheduled checks provide another evaluation opportunity.
+See the [live runbook](docs/RECORDING-RUNBOOK.md) for evidence views and operational details. Its live-screen narration is an alternative reproduction workflow, rather than the current slide-only recording plan. Use your own stack's Outputs instead of the original private console links mentioned in that guide.
 
-## Costs and cleanup
+## Safety and limitations
 
-The initial preflight on 20 October 2026 showed the Free plan, active, with USD 100 remaining.
-That is a timestamped observation, not a guarantee about later balance. Monitor AWS Settings > Billing.
-Lambda scans use 256 MB and a 90-second timeout; logs retain 14 days; trail objects expire after 30 days.
+- Evaluation is restricted to explicitly listed, tagged groups. Removal additionally requires no attached network interfaces; scope and current rule contents are checked again before revocation.
+- Public-anywhere matching recognizes individual normalized `0.0.0.0/0` and `::/0` rules. Combined CIDR coverage, prefix lists, referenced groups, routing and NACL analysis are outside scope.
+- Port-range overlap counts as a match. A violating range is removed whole, rather than split into permitted fragments.
+- If overlapping policies request both alert and remediation, alert wins and a conflict flag is recorded.
+- Invalid policies stop evaluation and fail the invocation. Dry-run reports intended remediation without removing rules.
+- Event delivery may be delayed or missed; scheduled checks provide another evaluation opportunity. Repeated evaluations can repeat alerts. There is no durable incident database or exactly-once guarantee.
+- Rechecks reduce concurrency risk but do not make separate EC2 API calls atomic.
+- `remediated_verified` means the rule was absent after revocation; it does not prove end-to-end network isolation or absence of intrusion.
+- SNS publication and inbox delivery are separate. Email requires a confirmed subscription; the original experiments include received-email evidence.
 
-Keep the stack for rehearsal if needed. To pause automated checks use `lab.py events disable`
-and `lab.py schedule disable`. Removing the stack requires a separate deliberate cleanup action.
-CloudTrail's log bucket and the CloudWatch log group have Retain policies. The separately created
-artifact bucket and versioned contents also remain after stack deletion; export evidence and
-explicitly review retained resources before removing them. Never delete the default VPC.
+## Costs, pausing and cleanup
 
-## References
+Deployment uses billable AWS services. Check AWS Settings > Billing and applicable project credits or spend limits. No present credit balance or zero-cost guarantee is implied. Lambda uses 256 MB with a 90-second timeout; CloudWatch logs retain 14 days; the CloudTrail bucket has lifecycle expiration rules.
 
-- https://docs.aws.amazon.com/eventbridge/latest/userguide/eb-service-event-cloudtrail.html
-- https://docs.aws.amazon.com/AWSEC2/latest/APIReference/API_RevokeSecurityGroupIngress.html
-- https://docs.aws.amazon.com/vpc/latest/userguide/security-group-rules.html
-- https://docs.aws.amazon.com/scheduler/latest/UserGuide/what-is-scheduler.html
-- https://docs.aws.amazon.com/config/latest/developerguide/restricted-ssh.html
+Pause automatic evaluation:
 
-## Repository and verified results
+```powershell
+.\.venv\Scripts\python.exe scripts\lab.py events disable
+.\.venv\Scripts\python.exe scripts\lab.py schedule disable
+```
 
-Source repository: https://github.com/parth1056/acc-ia
+This pauses the two evaluation triggers; the stack, CloudTrail and stored data remain. `finish` restores automation rather than tearing down resources. `lab.py clear-demo` removes **all inbound rules** from the three unattached stack-owned demonstration groups, including reference rules.
 
-Twenty-seven local tests passed again on 25 October 2026. Live AWS tests recorded on 20 and 24 October cover event-driven SSH remediation, alert-only database handling, dynamic policy changes, actual scheduled scans, IPv6 and port-range handling, monitoring scope, dry-run and invalid-policy validation. Received SNS emails for the database alert and policy-v2 remediation have also been verified.
+When no longer needed, review and delete your own CloudFormation stack. The CloudTrail bucket and CloudWatch log group have Retain policies. The separately created artifact bucket is outside the stack. Review retained buckets, object versions, logs and charges separately before deleting them. Do not delete the existing prerequisite VPC.
 
-The submission presentation explains these tests using real screenshots. Private deployment configuration, raw audit evidence, credentials and student details are intentionally excluded from this source repository. The course-specific GitHub Classroom acceptance/submission must be completed separately if required by the instructor.
+## Submission and evidence
+
+This repository contains implementation, infrastructure, tests and reproduction instructions. Raw audit evidence, private deployment settings, credentials and student details are excluded. The report and presentation use genuine screenshots. The report pins implementation snapshot `eebce79b2d61b1304b31fb220080ca7c4fc912e9`; later documentation updates do not change that tested source snapshot.
+
+The three-person recording and submission form are separate deliverables. Publishing this repository does not itself accept or submit a GitHub Classroom assignment; that requires the instructor's assignment link.
+
+## AWS references
+
+- [CloudTrail events through EventBridge](https://docs.aws.amazon.com/eventbridge/latest/userguide/eb-service-event-cloudtrail.html)
+- [Security group rules](https://docs.aws.amazon.com/vpc/latest/userguide/security-group-rules.html)
+- [RevokeSecurityGroupIngress API](https://docs.aws.amazon.com/AWSEC2/latest/APIReference/API_RevokeSecurityGroupIngress.html)
+- [EventBridge Scheduler](https://docs.aws.amazon.com/scheduler/latest/UserGuide/what-is-scheduler.html)
