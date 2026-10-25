@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+tmp/
+.env
+output/
+deployment/private-*.json
+deployment/private-*.md
+
+# Local agent settings and raw audit evidence are not submission source.
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+.cursor/
+evidence/

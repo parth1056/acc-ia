@@ -1,0 +1,3 @@
+-r requirements.txt
+cfn-lint==1.57.2
+reportlab==4.4.9

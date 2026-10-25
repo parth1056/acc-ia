@@ -1,0 +1,34 @@
+let buckets = Resources.*[ Type == 'AWS::S3::Bucket' ]
+let functions = Resources.*[ Type == 'AWS::Lambda::Function' ]
+let groups = Resources.*[ Type == 'AWS::EC2::SecurityGroup' ]
+let logs = Resources.*[ Type == 'AWS::Logs::LogGroup' ]
+let topics = Resources.*[ Type == 'AWS::SNS::Topic' ]
+
+rule private_encrypted_versioned_buckets when %buckets !empty {
+    %buckets {
+        Properties.PublicAccessBlockConfiguration.BlockPublicAcls == true
+        Properties.PublicAccessBlockConfiguration.BlockPublicPolicy == true
+        Properties.PublicAccessBlockConfiguration.IgnorePublicAcls == true
+        Properties.PublicAccessBlockConfiguration.RestrictPublicBuckets == true
+        Properties.VersioningConfiguration.Status == 'Enabled'
+        Properties.BucketEncryption.ServerSideEncryptionConfiguration !empty
+        DeletionPolicy == 'Retain'
+    }
+}
+rule bounded_lambda when %functions !empty {
+    %functions {
+        Properties.Timeout <= 90
+        Properties.MemorySize <= 256
+        Properties.Environment.Variables.DRY_RUN.Ref == 'DryRun'
+        Properties.VpcConfig !exists
+    }
+}
+rule no_initial_public_ingress when %groups !empty {
+    %groups { Properties.SecurityGroupIngress !exists }
+}
+rule bounded_log_retention when %logs !empty {
+    %logs { Properties.RetentionInDays <= 14 }
+}
+rule encrypted_notifications when %topics !empty {
+    %topics { Properties.KmsMasterKeyId == 'alias/aws/sns' }
+}

@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "policy_version": "demo-v1",
+  "policies": [
+    {"id": "ADMIN-ACCESS", "enabled": true, "protocol": "tcp", "port_ranges": [[22,22],[3389,3389]], "source_match": "public_anywhere", "action": "remediate"},
+    {"id": "DATABASE-ACCESS", "enabled": true, "protocol": "tcp", "port_ranges": [[3306,3306],[5432,5432]], "source_match": "public_anywhere", "action": "alert"}
+  ]
+}

@@ -1,0 +1,63 @@
+{
+  "verified_on": "2026-10-24",
+  "local_tests_passed": 27,
+  "started_at": "2026-10-24T12:17:02.478175+00:00",
+  "completed_at": "2026-10-24T12:20:33.104387+00:00",
+  "checks": {
+    "ssh": {
+      "trigger": "event",
+      "policy_version": "demo-v1",
+      "outcomes": [
+        "remediated_verified"
+      ]
+    },
+    "alert": {
+      "trigger": "event",
+      "policy_version": "demo-v1",
+      "outcomes": [
+        "alert_only"
+      ]
+    },
+    "policy": {
+      "code_unchanged": true,
+      "policy_version": "demo-v2",
+      "outcomes": [
+        "remediated_verified"
+      ]
+    },
+    "scheduled": {
+      "trigger": "scheduled",
+      "policy_version": "demo-v2",
+      "outcomes": [
+        "remediated_verified"
+      ]
+    },
+    "scope": {
+      "unmonitored_rule_retained": true
+    },
+    "extended": {
+      "range": {
+        "trigger": "event",
+        "outcomes": [
+          "remediated_verified"
+        ]
+      },
+      "ipv6": {
+        "trigger": "event",
+        "outcomes": [
+          "remediated_verified"
+        ]
+      }
+    }
+  },
+  "safe_rules_preserved": true,
+  "recording_baseline": {
+    "policy_version": "demo-v1",
+    "event_monitoring": "enabled",
+    "scheduler": "paused until its recording segment",
+    "permitted_reference_rules": [
+      "restricted SSH",
+      "unmatched HTTPS"
+    ]
+  }
+}

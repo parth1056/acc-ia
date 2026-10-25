@@ -1,0 +1,828 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "ACC IA security-group compliance prototype: external JSON policies, event-driven evaluation, scheduled checks, verified remediation and alerts.",
+  "Metadata": {
+    "AWSToolsMetrics": {
+      "AWSAgentToolkit": "aws-cloudformation@3"
+    }
+  },
+  "Parameters": {
+    "VpcId": {
+      "Type": "AWS::EC2::VPC::Id"
+    },
+    "ArtifactBucket": {
+      "Type": "String"
+    },
+    "CodeKey": {
+      "Type": "String",
+      "Default": "artifacts/lambda-08deaf3f2b22640b.zip"
+    },
+    "NotificationEmail": {
+      "Type": "String"
+    },
+    "DryRun": {
+      "Type": "String",
+      "Default": "true",
+      "AllowedValues": [
+        "true",
+        "false"
+      ]
+    },
+    "ChangeMonitoringState": {
+      "Type": "String",
+      "Default": "DISABLED",
+      "AllowedValues": [
+        "ENABLED",
+        "DISABLED"
+      ]
+    },
+    "ScheduleState": {
+      "Type": "String",
+      "Default": "DISABLED",
+      "AllowedValues": [
+        "ENABLED",
+        "DISABLED"
+      ]
+    },
+    "ScanRate": {
+      "Type": "String",
+      "Default": "rate(1 hour)",
+      "AllowedValues": [
+        "rate(1 minute)",
+        "rate(1 hour)"
+      ]
+    }
+  },
+  "Resources": {
+    "MonitorGroupA": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "GroupDescription": "Unattached ACC security policy demonstration group",
+        "GroupName": {
+          "Fn::Sub": "${AWS::StackName}-monitor-a"
+        },
+        "VpcId": {
+          "Ref": "VpcId"
+        },
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "ACC-IA-Cloud-Security"
+          },
+          {
+            "Key": "Owner",
+            "Value": "ProjectOwner"
+          },
+          {
+            "Key": "ACC-Monitor",
+            "Value": "true"
+          }
+        ]
+      },
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "Controlled firewall configuration evaluation",
+          "must": [
+            "Keep unattached to workloads; ingress added only during controlled tests"
+          ]
+        }
+      }
+    },
+    "MonitorGroupB": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "GroupDescription": "Unattached ACC security policy demonstration group",
+        "GroupName": {
+          "Fn::Sub": "${AWS::StackName}-monitor-b"
+        },
+        "VpcId": {
+          "Ref": "VpcId"
+        },
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "ACC-IA-Cloud-Security"
+          },
+          {
+            "Key": "Owner",
+            "Value": "ProjectOwner"
+          },
+          {
+            "Key": "ACC-Monitor",
+            "Value": "true"
+          }
+        ]
+      },
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "Controlled firewall configuration evaluation",
+          "must": [
+            "Keep unattached to workloads; ingress added only during controlled tests"
+          ]
+        }
+      }
+    },
+    "ControlGroup": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "GroupDescription": "Unattached ACC security policy demonstration group",
+        "GroupName": {
+          "Fn::Sub": "${AWS::StackName}-control"
+        },
+        "VpcId": {
+          "Ref": "VpcId"
+        },
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "ACC-IA-Cloud-Security"
+          },
+          {
+            "Key": "Owner",
+            "Value": "ProjectOwner"
+          },
+          {
+            "Key": "ACC-Monitor",
+            "Value": "false"
+          }
+        ]
+      },
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "Controlled firewall configuration evaluation",
+          "must": [
+            "Keep unattached to workloads; ingress added only during controlled tests"
+          ]
+        }
+      }
+    },
+    "LogBucket": {
+      "Type": "AWS::S3::Bucket",
+      "Properties": {
+        "PublicAccessBlockConfiguration": {
+          "BlockPublicAcls": true,
+          "BlockPublicPolicy": true,
+          "IgnorePublicAcls": true,
+          "RestrictPublicBuckets": true
+        },
+        "BucketEncryption": {
+          "ServerSideEncryptionConfiguration": [
+            {
+              "ServerSideEncryptionByDefault": {
+                "SSEAlgorithm": "AES256"
+              }
+            }
+          ]
+        },
+        "VersioningConfiguration": {
+          "Status": "Enabled"
+        },
+        "LifecycleConfiguration": {
+          "Rules": [
+            {
+              "Id": "ExpireLabLogs",
+              "Status": "Enabled",
+              "ExpirationInDays": 30,
+              "NoncurrentVersionExpiration": {
+                "NoncurrentDays": 7
+              }
+            }
+          ]
+        },
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "ACC-IA-Cloud-Security"
+          },
+          {
+            "Key": "Owner",
+            "Value": "ProjectOwner"
+          }
+        ]
+      },
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "Private CloudTrail audit storage with bounded retention",
+          "must": [
+            "Retain audit evidence on stack deletion"
+          ]
+        }
+      },
+      "DeletionPolicy": "Retain",
+      "UpdateReplacePolicy": "Retain"
+    },
+    "LogBucketPolicy": {
+      "Type": "AWS::S3::BucketPolicy",
+      "Properties": {
+        "Bucket": {
+          "Ref": "LogBucket"
+        },
+        "PolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "TLSOnly",
+              "Effect": "Deny",
+              "Principal": "*",
+              "Action": "s3:*",
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "LogBucket",
+                    "Arn"
+                  ]
+                },
+                {
+                  "Fn::Sub": "${LogBucket.Arn}/*"
+                }
+              ],
+              "Condition": {
+                "Bool": {
+                  "aws:SecureTransport": "false"
+                }
+              }
+            },
+            {
+              "Sid": "TrailACL",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "cloudtrail.amazonaws.com"
+              },
+              "Action": "s3:GetBucketAcl",
+              "Resource": {
+                "Fn::GetAtt": [
+                  "LogBucket",
+                  "Arn"
+                ]
+              },
+              "Condition": {
+                "StringEquals": {
+                  "aws:SourceArn": {
+                    "Fn::Sub": "arn:${AWS::Partition}:cloudtrail:${AWS::Region}:${AWS::AccountId}:trail/${AWS::StackName}-trail"
+                  }
+                }
+              }
+            },
+            {
+              "Sid": "TrailWrite",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "cloudtrail.amazonaws.com"
+              },
+              "Action": "s3:PutObject",
+              "Resource": {
+                "Fn::Sub": "${LogBucket.Arn}/cloudtrail/AWSLogs/${AWS::AccountId}/*"
+              },
+              "Condition": {
+                "StringEquals": {
+                  "s3:x-amz-acl": "bucket-owner-full-control",
+                  "aws:SourceArn": {
+                    "Fn::Sub": "arn:${AWS::Partition}:cloudtrail:${AWS::Region}:${AWS::AccountId}:trail/${AWS::StackName}-trail"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "Allow this trail to deliver audit records; deny insecure transport",
+          "must": []
+        }
+      }
+    },
+    "Trail": {
+      "Type": "AWS::CloudTrail::Trail",
+      "Properties": {
+        "TrailName": {
+          "Fn::Sub": "${AWS::StackName}-trail"
+        },
+        "S3BucketName": {
+          "Ref": "LogBucket"
+        },
+        "S3KeyPrefix": "cloudtrail",
+        "IsLogging": true,
+        "IsMultiRegionTrail": false,
+        "IncludeGlobalServiceEvents": false,
+        "EnableLogFileValidation": true,
+        "EventSelectors": [
+          {
+            "ReadWriteType": "WriteOnly",
+            "IncludeManagementEvents": true
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "ACC-IA-Cloud-Security"
+          },
+          {
+            "Key": "Owner",
+            "Value": "ProjectOwner"
+          }
+        ]
+      },
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "Enable management-write event delivery to EventBridge",
+          "must": [
+            "Selected Region only; management writes only"
+          ]
+        }
+      },
+      "DependsOn": "LogBucketPolicy"
+    },
+    "IncidentTopic": {
+      "Type": "AWS::SNS::Topic",
+      "Properties": {
+        "TopicName": {
+          "Fn::Sub": "${AWS::StackName}-incidents"
+        },
+        "DisplayName": "ACC Security",
+        "KmsMasterKeyId": "alias/aws/sns",
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "ACC-IA-Cloud-Security"
+          },
+          {
+            "Key": "Owner",
+            "Value": "ProjectOwner"
+          }
+        ]
+      },
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "Notify project owner about policy violations",
+          "must": []
+        }
+      }
+    },
+    "IncidentEmail": {
+      "Type": "AWS::SNS::Subscription",
+      "Properties": {
+        "TopicArn": {
+          "Ref": "IncidentTopic"
+        },
+        "Protocol": "email",
+        "Endpoint": {
+          "Ref": "NotificationEmail"
+        }
+      },
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "Deliver alerts to the configured project-owner inbox",
+          "must": [
+            "Subscription confirmation required"
+          ]
+        }
+      }
+    },
+    "FunctionLogs": {
+      "Type": "AWS::Logs::LogGroup",
+      "Properties": {
+        "LogGroupName": {
+          "Fn::Sub": "/aws/lambda/${AWS::StackName}-monitor"
+        },
+        "RetentionInDays": 14,
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "ACC-IA-Cloud-Security"
+          },
+          {
+            "Key": "Owner",
+            "Value": "ProjectOwner"
+          }
+        ]
+      },
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "Structured execution and remediation evidence",
+          "must": [
+            "Retain for report evidence"
+          ]
+        }
+      },
+      "DeletionPolicy": "Retain",
+      "UpdateReplacePolicy": "Retain"
+    },
+    "ExecutionRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "RoleName": {
+          "Fn::Sub": "${AWS::StackName}-lambda-role"
+        },
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "ScopedSecurityEvaluation",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "ec2:DescribeSecurityGroups",
+                    "ec2:DescribeSecurityGroupRules",
+                    "ec2:DescribeNetworkInterfaces"
+                  ],
+                  "Resource": "*"
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": "ec2:RevokeSecurityGroupIngress",
+                  "Resource": [
+                    {
+                      "Fn::Sub": "arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/${MonitorGroupA}"
+                    },
+                    {
+                      "Fn::Sub": "arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:security-group/${MonitorGroupB}"
+                    }
+                  ],
+                  "Condition": {
+                    "StringEquals": {
+                      "ec2:ResourceTag/ACC-Monitor": "true"
+                    }
+                  }
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": "s3:GetObject",
+                  "Resource": {
+                    "Fn::Sub": "arn:${AWS::Partition}:s3:::${ArtifactBucket}/policies/current.json"
+                  }
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": "sns:Publish",
+                  "Resource": {
+                    "Ref": "IncidentTopic"
+                  }
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "kms:Decrypt",
+                    "kms:GenerateDataKey"
+                  ],
+                  "Resource": {
+                    "Fn::Sub": "arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:key/*"
+                  },
+                  "Condition": {
+                    "StringEquals": {
+                      "kms:ViaService": {
+                        "Fn::Sub": "sns.${AWS::Region}.amazonaws.com"
+                      }
+                    }
+                  }
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents"
+                  ],
+                  "Resource": {
+                    "Fn::Sub": "${FunctionLogs.Arn}"
+                  }
+                }
+              ]
+            }
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "ACC-IA-Cloud-Security"
+          },
+          {
+            "Key": "Owner",
+            "Value": "ProjectOwner"
+          }
+        ]
+      },
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "Least-privilege Lambda execution",
+          "must": [
+            "Read policy object; revoke only two monitored test groups; no workload access"
+          ]
+        }
+      }
+    },
+    "MonitorFunction": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "FunctionName": {
+          "Fn::Sub": "${AWS::StackName}-monitor"
+        },
+        "Runtime": "python3.13",
+        "Handler": "handler.handler",
+        "Role": {
+          "Fn::GetAtt": [
+            "ExecutionRole",
+            "Arn"
+          ]
+        },
+        "Code": {
+          "S3Bucket": {
+            "Ref": "ArtifactBucket"
+          },
+          "S3Key": {
+            "Ref": "CodeKey"
+          }
+        },
+        "Timeout": 90,
+        "MemorySize": 256,
+        "Environment": {
+          "Variables": {
+            "POLICY_BUCKET": {
+              "Ref": "ArtifactBucket"
+            },
+            "POLICY_KEY": "policies/current.json",
+            "TOPIC_ARN": {
+              "Ref": "IncidentTopic"
+            },
+            "MONITORED_GROUP_IDS": {
+              "Fn::Join": [
+                ",",
+                [
+                  {
+                    "Ref": "MonitorGroupA"
+                  },
+                  {
+                    "Ref": "MonitorGroupB"
+                  }
+                ]
+              ]
+            },
+            "PROJECT_ID": {
+              "Ref": "AWS::AccountId"
+            },
+            "DRY_RUN": {
+              "Ref": "DryRun"
+            }
+          }
+        },
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "ACC-IA-Cloud-Security"
+          },
+          {
+            "Key": "Owner",
+            "Value": "ProjectOwner"
+          }
+        ]
+      },
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "One reusable policy engine for changes and scheduled scans",
+          "must": [
+            "Start in dry-run mode; exact group allowlist plus tag; Python 3.13"
+          ]
+        }
+      },
+      "DependsOn": "FunctionLogs"
+    },
+    "ChangeRule": {
+      "Type": "AWS::Events::Rule",
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-changes"
+        },
+        "State": {
+          "Ref": "ChangeMonitoringState"
+        },
+        "EventPattern": {
+          "source": [
+            "aws.ec2"
+          ],
+          "detail-type": [
+            "AWS API Call via CloudTrail"
+          ],
+          "detail": {
+            "eventSource": [
+              "ec2.amazonaws.com"
+            ],
+            "eventName": [
+              "AuthorizeSecurityGroupIngress",
+              "ModifySecurityGroupRules"
+            ]
+          }
+        },
+        "Targets": [
+          {
+            "Id": "SecurityMonitor",
+            "Arn": {
+              "Fn::GetAtt": [
+                "MonitorFunction",
+                "Arn"
+              ]
+            }
+          }
+        ]
+      },
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "Evaluate current rules after ingress additions or modifications",
+          "must": [
+            "Enable after dry-run verification; exclude revoke events"
+          ]
+        }
+      }
+    },
+    "EventPermission": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "FunctionName": {
+          "Ref": "MonitorFunction"
+        },
+        "Action": "lambda:InvokeFunction",
+        "Principal": "events.amazonaws.com",
+        "SourceArn": {
+          "Fn::GetAtt": [
+            "ChangeRule",
+            "Arn"
+          ]
+        },
+        "SourceAccount": {
+          "Ref": "AWS::AccountId"
+        }
+      },
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "Only this change rule may invoke Lambda",
+          "must": []
+        }
+      }
+    },
+    "SchedulerRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "RoleName": {
+          "Fn::Sub": "${AWS::StackName}-scheduler-role"
+        },
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "scheduler.amazonaws.com"
+              },
+              "Action": "sts:AssumeRole",
+              "Condition": {
+                "StringEquals": {
+                  "aws:SourceAccount": {
+                    "Ref": "AWS::AccountId"
+                  }
+                },
+                "ArnEquals": {
+                  "aws:SourceArn": {
+                    "Fn::Sub": "arn:${AWS::Partition}:scheduler:${AWS::Region}:${AWS::AccountId}:schedule-group/default"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "InvokeMonitorOnly",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": "lambda:InvokeFunction",
+                  "Resource": {
+                    "Fn::GetAtt": [
+                      "MonitorFunction",
+                      "Arn"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "ACC-IA-Cloud-Security"
+          },
+          {
+            "Key": "Owner",
+            "Value": "ProjectOwner"
+          }
+        ]
+      },
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "Allow scheduled scans to invoke only the monitor",
+          "must": []
+        }
+      }
+    },
+    "ComplianceSchedule": {
+      "Type": "AWS::Scheduler::Schedule",
+      "Properties": {
+        "Name": {
+          "Fn::Sub": "${AWS::StackName}-compliance"
+        },
+        "ScheduleExpression": {
+          "Ref": "ScanRate"
+        },
+        "FlexibleTimeWindow": {
+          "Mode": "OFF"
+        },
+        "State": {
+          "Ref": "ScheduleState"
+        },
+        "Target": {
+          "Arn": {
+            "Fn::GetAtt": [
+              "MonitorFunction",
+              "Arn"
+            ]
+          },
+          "RoleArn": {
+            "Fn::GetAtt": [
+              "SchedulerRole",
+              "Arn"
+            ]
+          },
+          "Input": "{\"trigger\":\"scheduled\"}",
+          "RetryPolicy": {
+            "MaximumEventAgeInSeconds": 300,
+            "MaximumRetryAttempts": 2
+          }
+        }
+      },
+      "Metadata": {
+        "com.aws.cloudformation.Context": {
+          "why": "Periodic recovery of missed configuration changes",
+          "must": [
+            "Enable only after test; hourly outside demo"
+          ]
+        }
+      }
+    }
+  },
+  "Outputs": {
+    "MonitorGroupA": {
+      "Value": {
+        "Ref": "MonitorGroupA"
+      }
+    },
+    "MonitorGroupB": {
+      "Value": {
+        "Ref": "MonitorGroupB"
+      }
+    },
+    "ControlGroup": {
+      "Value": {
+        "Ref": "ControlGroup"
+      }
+    },
+    "LogBucket": {
+      "Value": {
+        "Ref": "LogBucket"
+      }
+    },
+    "IncidentTopic": {
+      "Value": {
+        "Ref": "IncidentTopic"
+      }
+    },
+    "MonitorFunction": {
+      "Value": {
+        "Ref": "MonitorFunction"
+      }
+    },
+    "ChangeRule": {
+      "Value": {
+        "Ref": "ChangeRule"
+      }
+    },
+    "ComplianceSchedule": {
+      "Value": {
+        "Ref": "ComplianceSchedule"
+      }
+    }
+  }
+}
